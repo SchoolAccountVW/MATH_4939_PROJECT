@@ -1,0 +1,66 @@
+library(dplyr)
+library(zoo)
+library(ggplot2)
+library(spida2)
+library(readxl)
+library(p3d) 
+library(car)
+library(lattice)
+library(latticeExtra)
+library(nlme)
+
+TBI <- read_excel("C:/Users/___/Downloads/TBI.xlsx") #make sure to change this to where it is saved for you
+TBIlong <- tolong(TBI, timevar = 'visit' ,idvar = 'SubID')
+TBIlong1 <- TBIlong %>%
+  mutate(time = as.numeric(sub(".*\\.", "", row.names(.)))
+  )
+TBIlong1 <- TBIlong1 %>%
+  mutate(group = ifelse(grepl("^c", id), "Control", "Patient"))
+
+TBIlong1$group <- factor(TBIlong1$group, levels = c("Patient","Control"))
+
+
+xyplot( VBR ~ time| visit + sex ,TBIlong1,auto.key = T)
+
+xyplot( VBR ~ time,groups = sex,TBIlong1, #Male and Females what is the code associated
+        pch = 19,               
+        cex = c(.8, .8),      
+        auto.key = T)
+
+
+xyplot(VBR ~ time| sex, TBIlong1, #am not able to get the 1 and 2 instead of sex to show
+       main = "Comparison of Group 1 and Group 2",
+       xlab = "Time (Year 1 to 5)",
+       ylab = "Volume (V)")
+xyplot(VBR ~ time, groups = sex, TBIlong1, type = "b")
+
+xyplot(VBR ~ time, groups = id, TBIlong1, type = "b")
+
+
+xyplot(VBR ~ time, TBIlong1, # wanting to see how subjects with missing visits plot
+       subset = (id == 312), 
+       type = "b", 
+       pch = 19)
+
+
+
+
+fit1 <- lm(VBR ~ time, TBIlong1)
+summary(fit1)
+
+sp1 <-function(x)gsp(x,
+                     knots=c(2,3,4,5),
+                     degree=c(1,1,1,1),
+                     smooth=c(1,1,1,1))
+
+fitsp1 <- lme(VBR~sp1(time),TBIlong1,random=~1|id, 
+              na.action = na.omit)
+
+summary(fitsp1)
+pred <- data.frame(time = seq(-1, 6, 0.1)) #start, end,incremetents
+pred$fitsp1 <- as.numeric(predict(fitsp1,pred,level = 0))
+
+
+p1 <- xyplot(VBR ~ time, TBIlong1, col = "grey", pch = 16, alpha = 0.5)
+p2 <- xyplot(fitsp1 ~ time, data = pred, type = "l", col = "red", lwd = 2)
+p1 + p2
