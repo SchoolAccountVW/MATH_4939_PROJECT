@@ -1,66 +1,433 @@
-library(dplyr)
-library(zoo)
-library(ggplot2)
-library(spida2)
-library(readxl)
-library(p3d) 
+rm(list = ls())
+
+library(spida2)   
+library(p3d)      
 library(car)
 library(lattice)
 library(latticeExtra)
-library(nlme)
+library(readxl)
+library(tidyr) #added
+library(tidyverse) #added
+library(nlme) #added
 
-TBI <- read_excel("C:/Users/___/Downloads/TBI.xlsx") #make sure to change this to where it is saved for you
-TBIlong <- tolong(TBI, timevar = 'visit' ,idvar = 'SubID')
-TBIlong1 <- TBIlong %>%
-  mutate(time = as.numeric(sub(".*\\.", "", row.names(.)))
+data <-read_excel("C:/Users/Vlady/Downloads/TBI.xlsx")
+head(data)
+str(data)
+names(data)
+
+
+xyplot( VBR_1 ~  age_1 | SubID , data)
+xyplot( VBR_2 ~  age_2 | SubID , data)
+xyplot( VBR_3 ~  age_3 | SubID , data)
+xyplot( VBR_4 ~  age_4 | SubID , data)
+xyplot( VBR_5 ~  age_5 | SubID , data)
+
+long <- data %>%
+  pivot_longer(
+    cols = matches("_[0-9]+$"),
+    names_to = c(".value","occasion"),
+    names_pattern = "(.*)_([0-9]+)"
   )
-TBIlong1 <- TBIlong1 %>%
-  mutate(group = ifelse(grepl("^c", id), "Control", "Patient"))
+head(long)
 
-TBIlong1$group <- factor(TBIlong1$group, levels = c("Patient","Control"))
-
-
-xyplot( VBR ~ time| visit + sex ,TBIlong1,auto.key = T)
-
-xyplot( VBR ~ time,groups = sex,TBIlong1, #Male and Females what is the code associated
-        pch = 19,               
-        cex = c(.8, .8),      
-        auto.key = T)
+long$date <- as.Date(long$date, origin = "1899-12-30")  # need to add visit
+long <- long %>%
+  group_by(id) %>%
+  mutate(
+    elapsed_time = as.numeric(date - min(date, na.rm = TRUE)) / 365.25
+  ) %>%
+  ungroup() 
+                  # want to ask, any reason we are using elaspsed time over visit number, since we are missing some elapsed time
 
 
-xyplot(VBR ~ time| sex, TBIlong1, #am not able to get the 1 and 2 instead of sex to show
-       main = "Comparison of Group 1 and Group 2",
-       xlab = "Time (Year 1 to 5)",
-       ylab = "Volume (V)")
-xyplot(VBR ~ time, groups = sex, TBIlong1, type = "b")
+table_obs <- long %>%     
+  group_by(id) %>%
+  summarise(n_obs = sum(!is.na(date)))
+table_obs
 
-xyplot(VBR ~ time, groups = id, TBIlong1, type = "b")
+ggplot(long, aes(elapsed_time, VBR, group = id)) +
+  geom_line(alpha = 0.4) +
+  geom_point() +
+  labs(x = "Years since injury", y = "VBR") 
+
+# split Sex and Patient v Control
+long <- long %>%
+  mutate(sex = as.factor(sex))
+
+ggplot(long, aes(elapsed_time, VBR, group = id, color = sex)) +
+  geom_line(alpha = 0.4) +
+  geom_point() +
+  facet_wrap(~ group) +
+  labs(x = "Years since injury", y = "VBR")  
 
 
-xyplot(VBR ~ time, TBIlong1, # wanting to see how subjects with missing visits plot
-       subset = (id == 312), 
-       type = "b", 
-       pch = 19)
 
 
+```
 
+```{r}
+   #remove
+ 
 
-fit1 <- lm(VBR ~ time, TBIlong1)
+fit.pooled <- lm(VBR ~ sex, long)
+fit.within <- lm(VBR ~ age + sex, long) 
+fit.between <- lm(VBR ~ cvar(sex, age), long)
+fit.list <- list(pooled = fit.pooled, within = fit.within, between = fit.between)
+fit.list %>% lapply(coef) %>% lapply(`[`, 2) %>% cbind %>%
+  {colnames(.) <- 'Age' ; .}
+
+#Age is  time variant hence it  a lvl 2 variable since we're assessing longitudnal data it must be the clustering variable I think.Would it be better if we use age_days,occasion,elapsed time as the clustering variable.
+
+TBI <- within(
+  long,
+  {
+    pooled  <- predict(fit.pooled, newdata = long)
+    within  <- predict(fit.within, newdata = long)
+    between <- predict(fit.between, newdata = long)
+  }
+)
+
+p <- xyplot(VBR ~ age, long, groups = sex, pch = 1, cex = .5)
+p
+#For all the results above I use the lm() function and not lme since we have yet to reach mixed models.
+
+##Where id is the random cluster variable
+fit.mm <- lme(VBR ~ age, data = long, random = ~1 | id, na.action = na.omit)
+fit.mm
+#Give us an unbiased estimate of the effect of age on VBR if the withing estimate 
+
+fit.contextual <- lme(VBR ~ age + cvar(age, id),
+                      data = long,
+                      random = ~1 | id,
+                      na.action = na.omit)
+
+fit.compositional <- lme(VBR ~ dvar(age, id) + cvar(age, id), 
+                         data = long,
+                         random = ~1 | id,
+                         na.action = na.omit)
+wald(fit.contextual)
+wald(fit.compositional)
+
+summary(fit.contextual)
+summary(fit.compositional)
+
+L.cntx <- rbind(
+  'compositional (between) effect' = c(0, 1, 1),
+  'within effect' = c(0,1,0),
+  'contextual effect' = c(0,0,1)
+)
+
+L.comp <- rbind(
+  'compositional (between) effect' = c(0, 0, 1),
+  'within effect' = c(0,1,0),
+  'contextual effect' = c(0,-1,1)
+)
+L.cntx
+L.comp
+
+wald(fit.contextual, L.cntx)
+wald(fit.compositional, L.comp)
+
+rbind(
+  waldf(fit.within)[2, 1:2],
+  waldf(fit.between)[2,1:2]
+)
+#The contextual model and the compositional model 3 are equivalent since they have X matrices that span the same
+
+fit1 <- lme(VBR ~ age + cvar(age,id), long, random = ~ 1 + age | id,
+            control = list(msVerbose = TRUE),na.action = na.omit)
+
 summary(fit1)
+wald(fit1, "cvar")
 
-sp1 <-function(x)gsp(x,
-                     knots=c(2,3,4,5),
-                     degree=c(1,1,1,1),
-                     smooth=c(1,1,1,1))
+fit2 <- lme(VBR ~ age + cvar(age,id), long, random = ~ 1 + dvar(age,id) | id,
+            control = list(msVerbose = TRUE),na.action = na.omit)
+summary(fit2)
 
-fitsp1 <- lme(VBR~sp1(time),TBIlong1,random=~1|id, 
-              na.action = na.omit)
-
-summary(fitsp1)
-pred <- data.frame(time = seq(-1, 6, 0.1)) #start, end,incremetents
-pred$fitsp1 <- as.numeric(predict(fitsp1,pred,level = 0))
+anova(fit2,fit1)
 
 
-p1 <- xyplot(VBR ~ time, TBIlong1, col = "grey", pch = 16, alpha = 0.5)
-p2 <- xyplot(fitsp1 ~ time, data = pred, type = "l", col = "red", lwd = 2)
-p1 + p2
+### Added 
+
+set.seed(4939) 
+samp_ids <- sample(unique(long$SubID), 35)
+
+xyplot(VBR ~ elapsed_time | SubID, 
+       data = subset(long, SubID %in% samp_ids), 
+       groups = sex, 
+       type = c("p", "l"), 
+       auto.key = list(columns = 2))
+
+
+
+
+plot( fit1, sqrt( abs( resid(.))) ~ fitted(.), id = .02, sub = "scale-location plot",
+      ylab = expression( sqrt(abs(" resid "))),
+      panel = function(x, y, ...){
+        panel.xyplot( x, y, ...)
+        panel.loess(x ,y, ...)
+      })
+
+
+plot( fit2, sqrt( abs( resid(.))) ~ fitted(.), id = .02, sub = "scale-location plot",
+      ylab = expression( sqrt(abs(" resid "))),
+      panel = function(x, y, ...){
+        panel.xyplot( x, y, ...)
+        panel.loess(x ,y, ...)
+      })
+
+
+plot( fit2 ) 
+
+qqnorm( fit2, id = .05 )
+
+
+
+
+fit3 <- lme(VBR ~ age + cvar(age,id) +elapsed_time, long, random = ~ 1 + dvar(age,id) | id,
+            control = list(msVerbose = TRUE),na.action = na.omit)
+summary(fit3)               
+wald(fit3,'elapsed_time')
+anova(fit2 ,fit3)
+
+plot( fit3 )  # residuals
+
+qqnorm( fit3, id = .05, cex=1,pch = 0) #outliers exists, lower tail (463,468), upper(463,402,437,347,468)
+
+
+
+xyplot(VBR ~  elapsed_time| id, data = long, 
+       subset = id %in% c(463, 468,402,437,347), 
+       auto.key = TRUE,
+       type = c("p", "l"))
+
+
+vv <- Variogram( fit3 , form = ~ elapsed_time | id, maxdist = 2) #need to look at what distance is optimal in this case
+vv         # variance of differences between pairs as a function of distance in time
+str(vv)
+plot(vv)
+# var increases than decreases, however have small amount of n.pairs
+#
+
+
+
+###
+#     
+    # Need to fix
+#
+#re_values_3 <- ranef(fit3)
+#model_ids <- rownames(re_values)
+#subject_data_matched <- up(long, ~ id) %>%
+  #filter(id %in% model_ids)
+#RE3 <- cbind(re_values, subject_data_matched)
+#nrow(RE3)
+#xyplot(`(Intercept)` ~ group| sex, data = RE3, 
+       #main = "Random Intercepts from Fit.3")
+####
+
+
+fit4 <- lme(VBR ~  age + cvar(age,id) +elapsed_time, long, random = ~ 1 + dvar(age,id) | id,
+            control = list(msVerbose = TRUE),na.action = na.omit)
+fit3.d <- update( fit4, data = subset(long, !(id %in% c("463", "468","402","437","347")) ))               
+summary (fit3.d)
+
+# need to update long data so it includes visit
+#not able to get to converge 
+
+my_control <- lmeControl(msMaxIter = 1000, 
+                         maxIter = 2000, 
+                         msVerbose = TRUE, 
+                         returnObject = TRUE,
+                         opt = "nlminb")
+fit3c <- update(fit3.d, 
+                correlation = corCAR1(form = ~ elapsed_time | id),
+                control = my_control)
+summary( fit3c)  
+
+intervals( fit3c )   
+
+
+
+
+wald( fit3 )
+wald( fit3c  )
+
+
+#### ^^^
+
+
+
+
+
+
+
+
+
+#16/3/26
+```{r}
+knitr::opts_chunk$set(error=TRUE)
+#' 
+
+
+
+
+
+
+hsp <- subset(hs, Sector == "Public")
+hsp <- hsp[order(hsp$ses), ]
+
+
+
+
+
+model_1 <- lme(mathach ~ ses, hsp, random = ~ 1 + ses | school, 
+               control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+summary(model_1)
+#' 
+#' pt. of minimum variance is at
+#' $$-g_{01}/g_{11}$$ 
+#' or using $r_{01}$, $\sqrt{g_{00}}, \sqrt{g_{11}}$:    
+#' $$r_{01}\frac{\sqrt{g_{00}}}{\sqrt{g_{11}}}
+#'
+1 *  2.2066885 / 0.6588577
+
+
+model_1b <- lme(mathach ~ ses, hsp, random = ~ 1 + I(ses + 3.34) | school, 
+                control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+summary(model_1b)
+
+hsp$model_1b.blup <- predict(model_1b, level = 1)
+xyplot(model_1b.blup ~ ses, hsp, group = school, type = 'l')
+
+# 
+# what if we had something other than 3.34
+# 
+model_1c <- lme(mathach ~ ses, hsp, random = ~ 1 + I(ses + 3.6) | school, 
+                control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+model_1c <- lme(mathach ~ ses, hsp, random = ~ 1 + I(ses + 3.5) | school, 
+                control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+
+hsp$model_1c.blup <- predict(model_1c, level = 1)
+xyplot(model_1c.blup ~ ses, hsp, group = school, type = 'l')  
+
+AIC(model_1b, model_1c)  # equivalent models except numerically
+
+#' 
+#' Does it make sense to suppose that random variation in school lines
+#' amounts to radiation from a point?
+#' 
+
+model_2 <- lme(mathach ~ ses, hsp, random = ~ 1 + dvar(ses, school) | school,
+               control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+summary(model_2)
+
+model_2b <- lme(mathach ~ ses, hsp, random = ~ 1 + I(dvar(ses, school)+1.5) | school,
+                control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+summary(model_2b)
+
+hsp$model_2b.blup <- predict(model_2b, level = 1)
+xyplot(model_2b.blup ~ ses, hsp, group = school, type = 'l')  
+
+#' 
+#' Compare raw with dvar models
+#' 
+#' Same FE models so we can compare with AIC using REML (default) models
+#' 
+AIC(model_1c, model_2b)
+
+#' 
+#' Different FE
+#' 
+
+model_3 <- lme(mathach ~ ses + cvar(ses, school), hsp, random = ~ 1 + ses | school,
+               control = list(msMaxIter = 1000, msVerbose = TRUE, returnObject = T))
+
+#' surprise
+
+summary(model_3)
+hsp$model_3.blup <- predict(model_3, level = 1)
+xyplot(model_3.blup ~ ses, hsp, group = school, type = 'l')  
+
+xyplot(model_3.blup ~ ses, hsp, group = school, type = 'l')  +
+  xyplot(cvar(mathach, school) ~ cvar(ses,school), hsp, group = school, pch = 16)
+
+#'
+#' have a look at BLUEs
+#'
+model_3lm <-  lm(mathach ~ ses * factor(school),hsp)
+hsp$model_3.blue <- predict(model_3lm,hsp)
+
+xyplot(model_3.blup ~ ses, hsp, group = school, type = 'l')  +
+  xyplot(cvar(mathach, school) ~ cvar(ses,school), hsp, group = school, pch = 16) +
+  xyplot(model_3.blue ~ ses, hsp, group = school, type = 'l', lty = 3)
+
+#' 
+#' small example of OOP:
+#' 
+form <- function(fit,...) UseMethod('form')
+form.lme <- function(fit,...)  {
+  paste(c(as.character(formula(fit))[c(2,1,3)], '  random = ',
+          as.character(fit$call$random)[c(1,2)]), collapse = ' ')
+}
+form.lm <- function(fit,...) {
+  paste(c(as.character(formula(fit))[c(2,1,3)]), collapse = ' ')
+} 
+
+form(model_1b)
+form(model_1c)
+form(model_2b)
+form(model_3)
+
+clist <- list(msMaxIter = 1000, msVerbose = TRUE, returnObject = TRUE)
+
+model_4 <- lme(mathach ~ ses + cvar(ses, school), hsp, random = ~ 1 + dvar(ses, school) | school,
+               control = clist)
+
+summary(model_4)
+
+
+form(model_1b)
+form(model_1c)
+form(model_2b)
+form(model_3)
+form(model_4)
+
+#' 
+#' How to compare model_3 and model_4
+#' 
+#' - Can't use Wald tests
+#' - REML fits, same FE different RE
+#' - So we can use Likelihood
+#' - Models not nested
+#' - So compare with AIC, or BIC
+#' 
+AIC(model_3, model_4)
+#' 
+#' How to compare model_3 and model_1c
+#' 
+#' - Different FEs, equivalent REs
+#' - Could use Wald tests
+#' - Can's use Likelihood for FE since REML fits
+#' - Let's compare Wald with LRT on ML fits
+#' 
+AIC(model_3, model_1c)
+wald(model_3)
+wald(model_3, 'cvar')
+#
+model_1c.ml <- update(model_1c, method = 'ML')
+model_3.ml <- update(model_3, method = 'ML')
+
+# LRT
+
+anova(model_1c.ml, model_3.ml)
+
+#'
+#' Finally 2 models equivalent to 3 and 4
+#' 
+
+
+model_5 <- lme(mathach ~ dvar(ses,school) + cvar(ses, school), hsp, random = ~ 1 + ses | school)
+model_6 <- lme(mathach ~ dvar(ses,school) + cvar(ses, school), hsp, random = ~ 1 + dvar(ses, school) | school)
+
+AIC(model_5, model_6)
+AIC(model_3, model_4)
